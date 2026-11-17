@@ -47,6 +47,8 @@ N_BEAMS = 160
 NOISE_SIGMA_DEFAULT = 0.02
 DROPOUT_DEFAULT = 0.01
 HISTORY_LEN = 150   # number of past frames kept for the min-range trend graph
+OBSTACLE_HALF = 0.35  # half side length of a placed square obstacle (m)
+SENSOR_RADIUS = 0.15  # collision radius of the sensor body (m)
 
 # Colors
 BLACK = (15, 15, 20)
@@ -88,7 +90,32 @@ def ray_segment_intersection(p0, d, a, b):
     return np.inf
 
 
-def make_box(cx, cy, half=0.35):
+def cast_rays(p0, angles, walls):
+    """Vectorized version of ray_segment_intersection over every beam x wall.
+    Returns the true range per beam, clipped at MAX_RANGE."""
+    seg = np.asarray(walls, dtype=float)            # (M, 2, 2)
+    a, b = seg[:, 0], seg[:, 1]                       # (M, 2)
+    v1 = p0 - a                                       # (M, 2)
+    v2 = b - a                                        # (M, 2)
+    v3x = -np.sin(angles)[:, None]                    # (N, 1)  v3 = (-d_y, d_x)
+    v3y = np.cos(angles)[:, None]
+    denom = v2[:, 0] * v3x + v2[:, 1] * v3y           # (N, M)
+    ok = np.abs(denom) >= 1e-9
+    safe = np.where(ok, denom, 1.0)
+    t1 = (v2[:, 0] * v1[:, 1] - v2[:, 1] * v1[:, 0]) / safe
+    t2 = (v1[:, 0] * v3x + v1[:, 1] * v3y) / safe
+    valid = ok & (t1 >= 0.0) & (t2 >= 0.0) & (t2 <= 1.0)
+    t = np.where(valid, t1, np.inf)
+    return np.minimum(t.min(axis=1), MAX_RANGE)
+
+
+def collides(x, y, obstacles, margin=SENSOR_RADIUS):
+    """True if point (x, y), grown by `margin`, overlaps any square obstacle."""
+    lim = OBSTACLE_HALF + margin
+    return any(abs(x - cx) < lim and abs(y - cy) < lim for cx, cy in obstacles)
+
+
+def make_box(cx, cy, half=OBSTACLE_HALF):
     return [
         ((cx - half, cy - half), (cx + half, cy - half)),
         ((cx + half, cy - half), (cx + half, cy + half)),
@@ -119,19 +146,15 @@ def scan(sensor_pose, walls, rng, fov_deg, noise_sigma, dropout_p):
         local_angles = np.linspace(-half_fov, half_fov, N_BEAMS)
     angles = theta_s + local_angles
 
-    p0 = np.array([x_s, y_s])
-    true_r = np.empty(len(angles))
-    for i, ang in enumerate(angles):
-        d = np.array([math.cos(ang), math.sin(ang)])
-        best = MAX_RANGE
-        for (a, b) in walls:
-            t = ray_segment_intersection(p0, d, np.array(a), np.array(b))
-            if t < best:
-                best = t
-        true_r[i] = best
+    true_r = cast_rays(np.array([x_s, y_s]), angles, walls)
 
+    # Gaussian noise corrupts only real returns; a beam that hit nothing stays
+    # at r_max instead of turning into a phantom target just short of it.
+    hit = true_r < MAX_RANGE
     noise = rng.normal(0.0, noise_sigma, size=len(angles))
-    ranges = np.clip(true_r + noise, 0.0, MAX_RANGE)
+    ranges = true_r.copy()
+    ranges[hit] += noise[hit]
+    ranges = np.clip(ranges, 0.0, MAX_RANGE)
 
     if dropout_p > 0:
         drop_mask = rng.random(len(angles)) < dropout_p
@@ -186,7 +209,10 @@ def main():
                 if mx < ROOM_PANEL_W:  # click inside room panel only
                     wx, wy = px_to_world(mx, my)
                     if event.button == 1:  # left click = place
-                        if abs(wx) < WORLD_SIZE/2 - 0.4 and abs(wy) < WORLD_SIZE/2 - 0.4:
+                        inside_room = (abs(wx) < WORLD_SIZE/2 - 0.4 and abs(wy) < WORLD_SIZE/2 - 0.4)
+                        # don't drop a box on top of the sensor
+                        on_sensor = collides(sensor_x, sensor_y, [(wx, wy)])
+                        if inside_room and not on_sensor:
                             obstacles.append((wx, wy))
                     elif event.button == 3:  # right click = remove nearest
                         if obstacles:
@@ -199,25 +225,25 @@ def main():
         keys = pygame.key.get_pressed()
         move_speed = 3.0 * dt   # m/s
         rot_speed = 2.2 * dt    # rad/s
-        if keys[pygame.K_UP]:
-            sensor_y += move_speed
-        if keys[pygame.K_DOWN]:
-            sensor_y -= move_speed
-        if keys[pygame.K_LEFT]:
-            sensor_x -= move_speed
-        if keys[pygame.K_RIGHT]:
-            sensor_x += move_speed
+        dx = (keys[pygame.K_RIGHT] - keys[pygame.K_LEFT]) * move_speed
+        dy = (keys[pygame.K_UP] - keys[pygame.K_DOWN]) * move_speed
+        lim = WORLD_SIZE/2 - 0.2
+        # move each axis separately so the sensor slides along obstacle faces
+        nx = float(np.clip(sensor_x + dx, -lim, lim))
+        if not collides(nx, sensor_y, obstacles):
+            sensor_x = nx
+        ny = float(np.clip(sensor_y + dy, -lim, lim))
+        if not collides(sensor_x, ny, obstacles):
+            sensor_y = ny
         if keys[pygame.K_a]:
             sensor_theta += rot_speed
         if keys[pygame.K_d]:
             sensor_theta -= rot_speed
-        sensor_x = float(np.clip(sensor_x, -WORLD_SIZE/2 + 0.2, WORLD_SIZE/2 - 0.2))
-        sensor_y = float(np.clip(sensor_y, -WORLD_SIZE/2 + 0.2, WORLD_SIZE/2 - 0.2))
+        sensor_theta = (sensor_theta + math.pi) % (2 * math.pi) - math.pi  # keep in [-pi, pi)
 
         # ---------------- build world + scan ----------------
-        walls = room_walls()
-        for (cx, cy) in obstacles:
-            walls += make_box(cx, cy)
+        obstacle_segs = [seg for (cx, cy) in obstacles for seg in make_box(cx, cy)]
+        walls = room_walls() + obstacle_segs
 
         sensor_pose = (sensor_x, sensor_y, sensor_theta)
         fov_deg = FOV_OPTIONS[fov_idx]
@@ -238,16 +264,11 @@ def main():
             pygame.draw.line(screen, WHITE, world_to_px(*a), world_to_px(*b), 3)
 
         # obstacles
-        for (cx, cy) in obstacles:
-            for (a, b) in make_box(cx, cy):
-                pygame.draw.line(screen, GREEN, world_to_px(*a), world_to_px(*b), 3)
+        for (a, b) in obstacle_segs:
+            pygame.draw.line(screen, GREEN, world_to_px(*a), world_to_px(*b), 3)
 
-        # beams (faint) + hit points
+        # beams (dim brown) + hit points
         sx_px, sy_px = world_to_px(sensor_x, sensor_y)
-        for i in range(0, N_BEAMS, 2):
-            hx = sensor_x + ranges[i] * math.cos(angles[i])
-            hy = sensor_y + ranges[i] * math.sin(angles[i])
-            pygame.draw.line(screen, (*ORANGE, 0), (sx_px, sy_px), world_to_px(hx, hy), 1)
         for i in range(N_BEAMS):
             hx = sensor_x + ranges[i] * math.cos(angles[i])
             hy = sensor_y + ranges[i] * math.sin(angles[i])
@@ -305,7 +326,7 @@ def main():
             pygame.draw.lines(screen, (255, 170, 60), False, pts2, 2)
         screen.blit(font_small.render("0", True, GRAY), (plot_x0 - 18, g2_y0 + g2_h - 8))
         screen.blit(font_small.render(f"{MAX_RANGE:.0f}m", True, GRAY), (plot_x0 - 30, g2_y0 - 6))
-        screen.blit(font_small.render("time  (most recent ~5-10s)", True, GRAY), (plot_x0, g2_y0 + g2_h + 6))
+        screen.blit(font_small.render(f"time  (last {HISTORY_LEN} frames)", True, GRAY), (plot_x0, g2_y0 + g2_h + 6))
 
         # --- Graph 3: histogram of current ranges (shows noise/dropout / environment dependency) ---
         g3_y0, g3_h = g2_y0 + g2_h + 55, 110
@@ -337,8 +358,9 @@ def main():
             screen.blit(surf, (plot_x0, info_y + i * 20))
 
         controls = [
-            "Controls:  LClick=add obstacle   RClick=remove nearest   Arrows=move",
-            "  A/D=rotate   F=cycle FOV   +/-=noise sigma   [ ]=dropout   R=clear   Esc=quit",
+            "Controls: LClick=add box  RClick=remove  Arrows=move",
+            "  A/D=rotate  F=cycle FOV  +/-=noise sigma",
+            "  [ ]=dropout  R=clear  Esc=quit",
         ]
         for i, line in enumerate(controls):
             surf = font_small.render(line, True, GRAY)

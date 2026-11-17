@@ -1,41 +1,66 @@
-# 2D LIDAR Sensor Modelling and Simulation
+# Designing LIDAR — 2D LIDAR Sensor Modelling and Simulation
 
-## Overview
-This project features a mathematical model and an interactive numerical simulation of a two-dimensional (2D) rotating LIDAR (Light Detection and Ranging) sensor[cite: 1]. It is designed to demonstrate mobile robot perception by showing how measurements depend on sensor state, target state, and operating conditions[cite: 1]. 
+An interactive, real-time simulator of a **2D rotating LIDAR sensor**, built with Python, NumPy and Pygame.
+Drive the sensor around a room, drop obstacles with the mouse, and watch how every range measurement
+responds to the **sensor state**, the **environment**, and the **operating conditions** (noise and dropout), live.
 
-## Technical & Mathematical Model
-The simulation mathematically models the sensor's physical and probabilistic characteristics[cite: 1]:
-* **Sensor Geometry & State:** The sensor is modelled as $n_b$ discrete angular beams uniformly spaced across a field of view of angular width $\Phi$[cite: 1]. The field of view and beam origins translate and rotate rigidly based on the sensor state $x = (x_s, y_s, \theta_s)$[cite: 1].
-* **Physics-Based Ray-Casting (LOS):** The environment is represented as line segments (walls and edges)[cite: 1]. Line-of-sight visibility is calculated mathematically by solving linear systems for ray-segment intersections[cite: 1]. The true range is the distance to the closest valid intersection in front of the sensor, clipped at the sensor's maximum range $r_{max}$[cite: 1].
-* **Probabilistic Measurements:** Operating conditions $\Lambda = (\sigma, p_{drop})$ govern the measurement degradation[cite: 1]:
-    * **Gaussian Noise:** Each valid beam return is corrupted by additive Gaussian noise $w_i \sim N(0, \sigma^2)$ to model standard sensor inaccuracy[cite: 1].
-    * **Stochastic Dropout:** To simulate adverse weather (like fog or rain) or low-reflectivity surfaces, each beam has a probability $p_{drop}$ of failing to register a return, defaulting instead to $r_{max}$[cite: 1].
+It is designed as a teaching and experimentation tool for **mobile-robot perception**: every effect in the
+mathematical model below can be switched on, tuned, and seen immediately on three live graphs.
 
-## Files in this Repository
-* **`LIDAR_Project_Report.pdf`**: A detailed project report presenting the mathematical models, numerical simulation details, and validation experiments[cite: 1].
-* **`lidarrun.py`**: An interactive, live Python simulator that continuously scans a bounded room[cite: 2]. It provides real-time range-vs-angle plots and allows you to dynamically alter the sensor's environment and operating conditions[cite: 2].
+## Features
+- **Physics-based ray casting:** 160 beams tested against every wall and obstacle edge in a single vectorized NumPy pass, so it stays smooth with dozens of obstacles.
+- **Probabilistic sensor model:** Gaussian range noise and random beam dropout, both adjustable while it runs.
+- **Configurable field of view:** 90°, 180°, 270° or full 360°.
+- **Interactive world:** place and remove square obstacles with the mouse. The sensor collides with them instead of passing through.
+- **Three live graphs:**
+  1. Range vs. beam angle
+  2. Minimum range over time
+  3. Histogram of measured ranges
+- **Live readouts:** pose, heading, FOV, FPS and min/max/mean range.
 
-## Requirements
-To run the interactive simulator, you need Python installed along with the `pygame` and `numpy` libraries[cite: 2]. 
-You can install the dependencies using pip:
-`pip install pygame numpy`
+## Mathematical Model
+- **Sensor geometry & state:** The sensor emits $n_b$ discrete beams uniformly spaced across a field of view of width $\Phi$. The beams translate and rotate rigidly with the sensor state $x = (x_s, y_s, \theta_s)$.
+- **Line-of-sight ray casting:** The environment is a set of line segments (walls and obstacle edges). Each beam's true range is the distance to the closest valid ray–segment intersection in front of the sensor, found by solving a 2×2 linear system and clipped at the maximum range $r_{max}$.
+- **Probabilistic measurements:** The operating conditions $\Lambda = (\sigma, p_{drop})$ govern how measurements degrade:
+  - **Gaussian noise:** Each valid return is corrupted by additive noise $w_i \sim \mathcal{N}(0, \sigma^2)$. Beams that hit nothing stay at $r_{max}$.
+  - **Stochastic dropout:** To mimic fog, rain or low-reflectivity surfaces, each beam fails with probability $p_{drop}$ and reports $r_{max}$.
 
-## How to Run
-Run the simulator from your terminal or command prompt by executing[cite: 2]:
-`python lidarrun.py`
+## Getting Started
+```bash
+pip install -r requirements.txt
+python lidarrun.py
+```
+Requires Python 3.8+.
 
-## Interactive Controls
-Once the simulator is running, you can interact with the environment and the sensor using the following controls[cite: 2]:
+## Controls
+| Input | Action |
+|---|---|
+| Left click | Place a square obstacle |
+| Right click | Remove the nearest obstacle |
+| Arrow keys | Move the sensor |
+| A / D | Rotate the sensor left / right |
+| F | Cycle field of view (90 / 180 / 270 / 360°) |
+| + / − | Increase / decrease noise σ |
+| [ / ] | Decrease / increase dropout probability |
+| R | Clear all obstacles |
+| Esc | Quit |
 
-### Mouse Controls
-* **Left click**: Place a square obstacle at the mouse position[cite: 2].
-* **Right click**: Remove the nearest obstacle to the mouse[cite: 2].
+## Default Parameters
+| Parameter | Value |
+|---|---|
+| Room size | 10 m × 10 m |
+| Number of beams $n_b$ | 160 |
+| Max range $r_{max}$ | 7 m |
+| Noise σ | 0.02 m (0 – 0.5) |
+| Dropout $p_{drop}$ | 0.01 (0 – 0.9) |
+| Frame rate | 30 FPS |
 
-### Keyboard Controls
-* **Arrow keys**: Move the sensor (Up/Down/Left/Right)[cite: 2].
-* **A / D**: Rotate the sensor left / right[cite: 2].
-* **F**: Cycle field of view (90 / 180 / 270 / 360 deg)[cite: 2].
-* **+ / -**: Increase / decrease measurement noise ($\sigma$)[cite: 2].
-* **[ / ]**: Decrease / increase dropout probability ($p_{drop}$)[cite: 2].
-* **R**: Reset (clear all obstacles)[cite: 2].
-* **ESC**: Quit the simulation (can also close the window)[cite: 2].
+All values are constants at the top of `lidarrun.py` and are easy to change.
+
+## Repository Structure
+```
+Designing-Lidar/
+├── lidarrun.py        # interactive simulator (model + visualisation)
+├── requirements.txt   # Python dependencies
+└── README.md
+```
